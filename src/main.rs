@@ -1,9 +1,27 @@
+mod control;
+mod model;
+mod relay;
+mod sensor;
+mod server;
+mod time;
+mod wifi;
+
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
 use anyhow::Result;
-use esp_idf_hal::gpio::{PinDriver, Pull};
-use esp_idf_hal::peripherals::Peripherals;
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::log::EspLogger;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::sys::link_patches;
-use log::info;
+use log::{info, warn};
+
+use control::{spawn_control_loop, HeatingController};
+use relay::Relay;
+use server::start_http_server;
+use time::TimeService;
+use wifi::WifiManager;
 
 fn main() -> Result<()> {
     // Necessary patches for ESP-IDF
@@ -15,26 +33,85 @@ fn main() -> Result<()> {
 
     // Take board peripherals
     let peripherals = Peripherals::take()?;
+    let sys_loop = EspSystemEventLoop::take()?;
+    let nvs = EspDefaultNvsPartition::take()?;
 
-    // Initialize relay output pins
-    // Downstairs: GPIO 14 (D14 on ESP32 board)
-    // Upstairs:   GPIO 12 (D12 on ESP32 board)
-    let mut downstairs_relay = PinDriver::output(peripherals.pins.gpio14)?;
-    let mut upstairs_relay = PinDriver::output(peripherals.pins.gpio12)?;
+    // 1. Initialize relay outputs (active-low; start OFF with no ON pulse)
+    // Downstairs: GPIO 27 (D27 on ESP32 board)
+    // Upstairs:   GPIO 26 (D26 on ESP32 board)
+    // Avoid GPIO 12 (strapping pin) and GPIO 14 (PWM at boot) - see AGENTS.md.
+    let downstairs_relay = Relay::new("downstairs", peripherals.pins.gpio27)?;
+    let upstairs_relay = Relay::new("upstairs", peripherals.pins.gpio26)?;
 
-    // Set initial state (relays default OFF, typically HIGH if active-low)
-    downstairs_relay.set_high()?;
-    upstairs_relay.set_high()?;
-    info!("Relay GPIOs initialized (Downstairs: GPIO14, Upstairs: GPIO12)");
+    // 2. Initialize Wi-Fi
+    info!("Initializing Wi-Fi subsystem...");
+    let mut wifi = WifiManager::new(peripherals.modem, sys_loop, Some(nvs.clone()))?;
+    let wifi_connected = wifi.connect()?;
 
-    // TODO:
-    // 1. Initialize Wi-Fi (EspWifi)
-    // 2. Initialize SNTP for time synchronization (EspSntp)
-    // 3. Start background control loop thread (poll sensors, evaluate schedule)
-    // 4. Start HTTP Server (EspHttpServer) to serve API and UI
+    // 3. Initialize SNTP for wall-clock time sync
+    let mut time_service = None;
+    if wifi_connected {
+        match TimeService::init() {
+            Ok(svc) => {
+                svc.wait_for_sync(Duration::from_secs(15));
+                time_service = Some(svc);
+            }
+            Err(e) => {
+                warn!("Failed to initialize SNTP: {e:?}");
+            }
+        }
+    } else {
+        warn!("Wi-Fi not connected at boot. SNTP sync deferred.");
+    }
 
-    info!("System initialized. Entering main idle loop.");
+    // 4. Initialize shared HeatingController state (loads schedules from NVS)
+    //    and spawn the background heating control loop thread.
+    let controller = Arc::new(Mutex::new(HeatingController::new(
+        nvs,
+        downstairs_relay,
+        upstairs_relay,
+    )?));
+    let _control_thread = spawn_control_loop(controller.clone())?;
+
+    // 5. Start HTTP Server (EspHttpServer) to serve REST API and UI
+    let _http_server = start_http_server(controller.clone())?;
+
+    info!("System initialized. Entering supervisory monitoring loop.");
+
+    // Supervisory monitoring loop
     loop {
-        std::thread::sleep(std::time::Duration::from_secs(60));
+        std::thread::sleep(Duration::from_secs(10));
+
+        // Fail-safe: if Wi-Fi is down, ensure relays are switched OFF before attempting reconnect
+        if !wifi.is_connected() {
+            warn!("Wi-Fi disconnected — holding heating relays OFF");
+            if let Ok(mut guard) = controller.lock() {
+                guard.switch_all_off();
+            }
+        }
+
+        // Ensure Wi-Fi connection is maintained
+        if let Err(e) = wifi.ensure_connected() {
+            warn!("Wi-Fi check error: {e:?}");
+        }
+
+        // Initialize SNTP if it wasn't initialized at boot due to lack of network
+        if time_service.is_none() && wifi.is_connected() {
+            if let Ok(svc) = TimeService::init() {
+                svc.wait_for_sync(Duration::from_secs(15));
+                time_service = Some(svc);
+            }
+        }
+
+        let time_synced = time_service
+            .as_ref()
+            .map(|svc| svc.is_synced())
+            .unwrap_or_else(time::is_time_sane);
+
+        if let Some(t) = time::now() {
+            info!("Heartbeat: system healthy (time_synced={time_synced}), time is {t}");
+        } else {
+            warn!("Heartbeat: time unsynchronized (failsafe: heating relays held OFF)");
+        }
     }
 }

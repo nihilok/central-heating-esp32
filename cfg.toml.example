@@ -1,0 +1,20 @@
+# Central Heating Controller Configuration
+# Copy this file to `cfg.toml` (which is gitignored) and fill in your details.
+
+[wifi]
+ssid = "YOUR_WIFI_SSID"
+psk = "YOUR_WIFI_PASSWORD"
+
+# Optional settings
+[sntp]
+# Timezone in POSIX format (default is UK London time: GMT with daylight saving BST)
+timezone = "GMT0BST,M3.5.0/1,M10.5.0/2"
+# Custom NTP server (e.g., local router, Pi-hole, or public pool)
+server = "pool.ntp.org"
+
+[auth]
+# Web UI login credentials (if omitted, defaults to any username with your Wi-Fi password)
+username = "admin"
+password = "YOUR_UI_PASSWORD"
+# Optional shared token for POST /api/v3/receive/{sensor_id}/ (X-Sensor-Token header)
+sensor_token = ""

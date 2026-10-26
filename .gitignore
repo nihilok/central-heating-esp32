@@ -1,6 +1,7 @@
 target/
-.extbuild/
+.embuild/
 sdkconfig
 sdkconfig.old
+cfg.toml
 *.pyc
 .DS_Store
