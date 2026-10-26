@@ -1,0 +1,6 @@
+target/
+.extbuild/
+sdkconfig
+sdkconfig.old
+*.pyc
+.DS_Store
