@@ -340,7 +340,7 @@ pub fn default_systems() -> Vec<HeatingSystem> {
             system_id: "downstairs".to_string(),
             sensor: SensorNode {
                 url: "http://192.168.1.185".to_string(),
-                adjustment: Some(-1.0),
+                adjustment: None,
             },
             program: true,
             periods: vec![
@@ -405,7 +405,7 @@ pub fn default_systems() -> Vec<HeatingSystem> {
             system_id: "upstairs".to_string(),
             sensor: SensorNode {
                 url: "http://192.168.1.25".to_string(),
-                adjustment: Some(-1.0),
+                adjustment: None,
             },
             program: true,
             periods: vec![
