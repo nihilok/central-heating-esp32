@@ -14,6 +14,7 @@ use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::hal::peripherals::Peripherals;
 use esp_idf_svc::log::EspLogger;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
+use esp_idf_svc::ota::EspOta;
 use esp_idf_svc::sys::link_patches;
 use log::{info, warn};
 
@@ -30,6 +31,14 @@ fn main() -> Result<()> {
     // Initialize logger
     EspLogger::initialize_default();
     info!("Starting Central Heating ESP32 Controller...");
+
+    // Mark the currently running OTA slot as valid after successful boot
+    if let Ok(mut ota) = EspOta::new() {
+        if let Ok(slot) = ota.get_running_slot() {
+            info!("Running from OTA partition: {}", slot.label);
+        }
+        let _ = ota.mark_running_slot_valid();
+    }
 
     // Take board peripherals
     let peripherals = Peripherals::take()?;

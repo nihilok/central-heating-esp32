@@ -5,7 +5,8 @@ use anyhow::{Context, Result};
 use esp_idf_svc::http::server::{Configuration, EspHttpConnection, EspHttpServer, Request};
 use esp_idf_svc::http::Method;
 use esp_idf_svc::io::Write;
-use log::{info, warn};
+use esp_idf_svc::ota::EspOta;
+use log::{error, info, warn};
 use serde::Serialize;
 use serde_json::json;
 
@@ -656,6 +657,111 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
                 );
             }
             send_json(req, 410, &json!({"detail": "API-triggered reboot is disabled"}))
+        })?;
+    }
+
+    // POST /api/v3/ota/ — Over-the-Air firmware update (streams raw espflash app image into standby OTA slot)
+    {
+        let ctrl = controller.clone();
+        server.fn_handler("/api/v3/ota/", Method::Post, move |mut req| {
+            if check_bearer_auth(&req, &ctrl).is_none() {
+                return send_json(
+                    req,
+                    401,
+                    &json!({"detail": "Could not validate credentials"}),
+                );
+            }
+
+            // Fail-safe: pause control loop and switch all relays OFF before writing flash
+            if let Ok(mut guard) = ctrl.lock() {
+                guard.loop_enabled = false;
+                guard.switch_all_off();
+            }
+
+            info!("OTA: initiating firmware update...");
+            let mut ota = match EspOta::new() {
+                Ok(o) => o,
+                Err(e) => {
+                    error!("OTA: EspOta::new failed: {e:?}");
+                    return send_json(req, 500, &json!({"detail": format!("OTA init failed: {e}")}));
+                }
+            };
+
+            let mut update = match ota.initiate_update() {
+                Ok(u) => u,
+                Err(e) => {
+                    error!("OTA: initiate_update failed: {e:?}");
+                    return send_json(
+                        req,
+                        500,
+                        &json!({"detail": format!("OTA start failed: {e}")}),
+                    );
+                }
+            };
+
+            let mut buf = [0u8; 4096];
+            let mut total_bytes: usize = 0;
+
+            loop {
+                match req.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        if let Err(e) = update.write(&buf[..n]) {
+                            error!("OTA: flash write failed after {total_bytes} bytes: {e:?}");
+                            let _ = update.abort();
+                            return send_json(
+                                req,
+                                500,
+                                &json!({"detail": format!("OTA write failed: {e}")}),
+                            );
+                        }
+                        total_bytes += n;
+                    }
+                    Err(e) => {
+                        error!("OTA: network read error after {total_bytes} bytes: {e:?}");
+                        let _ = update.abort();
+                        return send_json(
+                            req,
+                            400,
+                            &json!({"detail": format!("OTA read failed: {e}")}),
+                        );
+                    }
+                }
+            }
+
+            if total_bytes < 65_536 {
+                warn!("OTA: image too small ({total_bytes} bytes), aborting");
+                let _ = update.abort();
+                return send_json(req, 400, &json!({"detail": "Image too small"}));
+            }
+
+            if let Err(e) = update.complete() {
+                error!("OTA: image validation / completion failed: {e:?}");
+                return send_json(
+                    req,
+                    400,
+                    &json!({"detail": format!("OTA validation failed: {e}")}),
+                );
+            }
+
+            info!("OTA: successfully wrote {total_bytes} bytes! Rebooting into new firmware...");
+            let res = send_json(
+                req,
+                200,
+                &json!({
+                    "detail": "OTA update complete, rebooting",
+                    "bytes": total_bytes
+                }),
+            );
+
+            std::thread::spawn(|| {
+                std::thread::sleep(std::time::Duration::from_millis(600));
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
+                }
+            });
+
+            res
         })?;
     }
 

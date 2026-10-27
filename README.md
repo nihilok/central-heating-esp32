@@ -42,10 +42,13 @@ source ~/export-esp.sh
 # Build (the first build downloads ESP-IDF into .embuild/ and takes a while)
 cargo build
 
-# Flash and open serial monitor
+# Flash and open serial monitor (initial USB flash)
 cargo run
 # or
 espflash flash --monitor
+
+# Subsequent updates over Wi-Fi (OTA):
+./scripts/ota.sh 192.168.1.168
 ```
 
 ## Architecture Roadmap
@@ -55,3 +58,4 @@ espflash flash --monitor
 - [x] SNTP synchronization (`EspSntp`) with timezone handling for wall-clock timing
 - [x] Background heating control loop thread (polling remote sensors, NVS schedule persistence & evaluating target periods)
 - [x] Embedded HTTP server (`EspHttpServer`) exposing REST API & serving UI assets
+- [x] Over-the-Air (OTA) Wi-Fi firmware updates (`POST /api/v3/ota/` & `scripts/ota.sh`)
