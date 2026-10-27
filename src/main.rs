@@ -46,11 +46,11 @@ fn main() -> Result<()> {
     let nvs = EspDefaultNvsPartition::take()?;
 
     // 1. Initialize relay outputs (active-low; start OFF with no ON pulse)
-    // Downstairs: GPIO 27 (D27 on ESP32 board)
-    // Upstairs:   GPIO 26 (D26 on ESP32 board)
+    // Downstairs: GPIO 26 (D26 on ESP32 board)
+    // Upstairs:   GPIO 27 (D27 on ESP32 board)
     // Avoid GPIO 12 (strapping pin) and GPIO 14 (PWM at boot) - see AGENTS.md.
-    let downstairs_relay = Relay::new("downstairs", peripherals.pins.gpio27)?;
-    let upstairs_relay = Relay::new("upstairs", peripherals.pins.gpio26)?;
+    let downstairs_relay = Relay::new("downstairs", peripherals.pins.gpio26)?;
+    let upstairs_relay = Relay::new("upstairs", peripherals.pins.gpio27)?;
 
     // 2. Initialize Wi-Fi
     info!("Initializing Wi-Fi subsystem...");

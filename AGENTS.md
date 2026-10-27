@@ -25,8 +25,8 @@ A single device both switches the heating relays and serves the HTTP API/UI.
 
 | Function | GPIO | Notes |
 | :--- | :--- | :--- |
-| Downstairs relay | 27 | Active-low: LOW = ON, HIGH = OFF |
-| Upstairs relay | 26 | Active-low: LOW = ON, HIGH = OFF |
+| Downstairs relay | 26 | Active-low: LOW = ON, HIGH = OFF |
+| Upstairs relay | 27 | Active-low: LOW = ON, HIGH = OFF |
 
 - **Fail safe = heating OFF.** On boot, panic, lost Wi-Fi, unsynced time, or unreachable sensors, the relays must end up OFF unless the design explicitly says otherwise.
 - **No ON pulse at boot.** Drive the pin HIGH (OFF) *before* setting it as an output. `PinDriver::output()` on its own briefly drives the pin LOW.

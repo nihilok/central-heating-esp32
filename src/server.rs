@@ -47,6 +47,8 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
     let config = Configuration {
         stack_size: HTTP_STACK_SIZE,
         max_uri_handlers: MAX_URI_HANDLERS,
+        max_open_sockets: 7,
+        lru_purge_enable: true,
         uri_match_wildcard: true,
         ..Default::default()
     };
@@ -842,7 +844,7 @@ fn serve_frontend(req: Request<&mut EspHttpConnection<'_>>) -> Result<()> {
             &[
                 ("Content-Type", "application/javascript; charset=utf-8"),
                 ("Content-Encoding", "gzip"),
-                ("Cache-Control", "public, max-age=31536000, immutable"),
+                ("Cache-Control", "no-cache"),
             ],
             INDEX_JS_GZ,
         ),

@@ -24,8 +24,8 @@ Embedded Rust (`std` on ESP-IDF) firmware for the central heating controller on 
 
 | Function | ESP32 GPIO | Board Label | Notes |
 | :--- | :--- | :--- | :--- |
-| **Downstairs Relay** | GPIO 27 | D27 | Output, active-low, default HIGH (OFF) |
-| **Upstairs Relay** | GPIO 26 | D26 | Output, active-low, default HIGH (OFF) |
+| **Downstairs Relay** | GPIO 26 | D26 | Output, active-low, default HIGH (OFF) |
+| **Upstairs Relay** | GPIO 27 | D27 | Output, active-low, default HIGH (OFF) |
 | **Relay GND** | GND | GND | Common ground |
 | **Relay VCC** | VIN (5V) | VIN | Power supply |
 

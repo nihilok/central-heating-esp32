@@ -71,13 +71,23 @@ impl WifiManager {
         info!("Starting Wi-Fi subsystem...");
         self.wifi.start().context("Failed to start Wi-Fi")?;
 
+        // Disable Wi-Fi modem sleep (WIFI_PS_NONE) so the ESP32 never misses broadcast ARP
+        // requests or incoming HTTP SYN packets on the LAN.
+        unsafe {
+            esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_NONE);
+        }
+
         info!("Connecting to '{}'...", CONFIG_SSID);
-        self.wifi.connect().context("Failed to connect to Wi-Fi AP")?;
+        if let Err(e) = self.wifi.connect() {
+            warn!("Initial Wi-Fi connect attempt failed ({e:?}); will retry in background loop");
+            return Ok(false);
+        }
 
         info!("Waiting for DHCP lease...");
-        self.wifi
-            .wait_netif_up()
-            .context("Failed while waiting for network interface up")?;
+        if let Err(e) = self.wifi.wait_netif_up() {
+            warn!("Initial DHCP wait failed ({e:?}); will retry in background loop");
+            return Ok(false);
+        }
 
         let ip_info = self.ip_info()?;
         if let Some(info) = ip_info {
@@ -113,6 +123,10 @@ impl WifiManager {
     pub fn ensure_connected(&mut self) -> Result<()> {
         if !self.is_connected() && !CONFIG_SSID.is_empty() {
             warn!("Wi-Fi connection lost, re-connecting...");
+            let _ = self.wifi.start();
+            unsafe {
+                esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_NONE);
+            }
             if let Err(e) = self.wifi.connect() {
                 warn!("Reconnection attempt failed: {e:?}");
             } else if let Err(e) = self.wifi.wait_netif_up() {
