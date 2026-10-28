@@ -12,6 +12,10 @@ if [[ -f "$HOME/export-esp.sh" ]]; then
   source "$HOME/export-esp.sh"
 fi
 
+if [[ -x "./scripts/build-ui.sh" ]]; then
+  ./scripts/build-ui.sh
+fi
+
 echo "==> Building firmware..."
 cargo build
 

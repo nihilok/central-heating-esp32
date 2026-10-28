@@ -21,16 +21,15 @@ const MAX_BODY_LEN: usize = 16_384;
 const HTTP_STACK_SIZE: usize = 10_240;
 const MAX_URI_HANDLERS: usize = 28;
 
-// Embedded frontend assets from `web/`
+// Embedded frontend assets from `web/` (Svelte 5 + Tailwind v4 build)
 const INDEX_HTML: &[u8] = include_bytes!("../web/index.html");
 const MANIFEST_JSON: &[u8] = include_bytes!("../web/manifest.webmanifest");
 const REGISTER_SW_JS: &[u8] = include_bytes!("../web/registerSW.js");
 const SW_JS: &[u8] = include_bytes!("../web/sw.js");
-const WORKBOX_JS_GZ: &[u8] = include_bytes!("../web/workbox-3e911b1d.js.gz");
 const FLAME_512_PNG: &[u8] = include_bytes!("../web/flame-512.png");
 const FLAME_192_PNG: &[u8] = include_bytes!("../web/assets/flame-Bd7yHd1u.png");
-const INDEX_CSS_GZ: &[u8] = include_bytes!("../web/assets/index-CNLjHVwa.css.gz");
-const INDEX_JS_GZ: &[u8] = include_bytes!("../web/assets/index-CQQkgtx2.js.gz");
+const INDEX_CSS_GZ: &[u8] = include_bytes!("../web/assets/index.css.gz");
+const INDEX_JS_GZ: &[u8] = include_bytes!("../web/assets/index.js.gz");
 
 const CORS_HEADERS: &[(&str, &str)] = &[
     ("Content-Type", "application/json"),
@@ -187,6 +186,16 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
             };
 
             if let Some(sensor) = update.sensor {
+                if sensor.url == sys.sensor.url {
+                    let old_adj = sys.sensor.adjustment.unwrap_or(0.0);
+                    let new_adj = sensor.adjustment.unwrap_or(0.0);
+                    if let Some(t) = sys.temperature {
+                        let raw = t - old_adj;
+                        sys.temperature = Some(((raw + new_adj) * 10.0).round() / 10.0);
+                    }
+                } else {
+                    sys.temperature_expiry = None;
+                }
                 sys.sensor = sensor;
             }
             if let Some(periods) = update.periods {
@@ -602,6 +611,40 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
         })?;
     }
 
+    // GET /api/v3/status/ — Consolidated dashboard payload (all zones + history + diagnostics)
+    {
+        let ctrl = controller.clone();
+        server.fn_handler("/api/v3/status/", Method::Get, move |req| {
+            let wall = time::now();
+            let now_epoch = time::now_epoch();
+
+            let (systems, loop_enabled) = {
+                let Ok(mut guard) = ctrl.lock() else {
+                    return send_json(req, 500, &json!({"detail": "Internal lock error"}));
+                };
+                let out: Vec<_> = guard
+                    .systems
+                    .iter_mut()
+                    .map(|s| s.as_system_out(wall.as_ref(), now_epoch))
+                    .collect();
+                (out, guard.loop_enabled)
+            };
+
+            let diagnostics = collect_diagnostics();
+
+            send_json(
+                req,
+                200,
+                &json!({
+                    "systems": systems,
+                    "loop_enabled": loop_enabled,
+                    "server_epoch": now_epoch,
+                    "diagnostics": diagnostics,
+                }),
+            )
+        })?;
+    }
+
     // GET /api/v3/start_loop/
     {
         let ctrl = controller.clone();
@@ -838,7 +881,7 @@ fn serve_frontend(req: Request<&mut EspHttpConnection<'_>>) -> Result<()> {
                 INDEX_HTML,
             )
         }
-        "/assets/index-CQQkgtx2.js" => send_bytes(
+        "/assets/index.js" => send_bytes(
             req,
             200,
             &[
@@ -848,13 +891,13 @@ fn serve_frontend(req: Request<&mut EspHttpConnection<'_>>) -> Result<()> {
             ],
             INDEX_JS_GZ,
         ),
-        "/assets/index-CNLjHVwa.css" => send_bytes(
+        "/assets/index.css" => send_bytes(
             req,
             200,
             &[
                 ("Content-Type", "text/css; charset=utf-8"),
                 ("Content-Encoding", "gzip"),
-                ("Cache-Control", "public, max-age=31536000, immutable"),
+                ("Cache-Control", "no-cache"),
             ],
             INDEX_CSS_GZ,
         ),
@@ -896,16 +939,6 @@ fn serve_frontend(req: Request<&mut EspHttpConnection<'_>>) -> Result<()> {
                 ("Cache-Control", "no-cache"),
             ],
             SW_JS,
-        ),
-        "/workbox-3e911b1d.js" => send_bytes(
-            req,
-            200,
-            &[
-                ("Content-Type", "application/javascript; charset=utf-8"),
-                ("Content-Encoding", "gzip"),
-                ("Cache-Control", "public, max-age=31536000, immutable"),
-            ],
-            WORKBOX_JS_GZ,
         ),
         other if other.starts_with("/api/") => {
             send_json(req, 404, &json!({"detail": "Not Found"}))
@@ -1108,4 +1141,33 @@ fn hex_val(b: u8) -> Option<u8> {
         b'A'..=b'F' => Some(b - b'A' + 10),
         _ => None,
     }
+}
+
+fn collect_diagnostics() -> serde_json::Value {
+    let uptime_secs = unsafe { (esp_idf_svc::sys::esp_timer_get_time() / 1_000_000).max(0) as u64 };
+    let free_heap_bytes = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
+    let min_free_heap_bytes = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
+
+    let wifi_rssi = unsafe {
+        let mut ap_info: esp_idf_svc::sys::wifi_ap_record_t = core::mem::zeroed();
+        if esp_idf_svc::sys::esp_wifi_sta_get_ap_info(&mut ap_info) == esp_idf_svc::sys::ESP_OK {
+            Some(ap_info.rssi)
+        } else {
+            None
+        }
+    };
+
+    let ota_slot = EspOta::new()
+        .ok()
+        .and_then(|ota| ota.get_running_slot().ok().map(|s| s.label.to_string()))
+        .unwrap_or_else(|| "unknown".to_string());
+
+    json!({
+        "uptime_secs": uptime_secs,
+        "free_heap_bytes": free_heap_bytes,
+        "min_free_heap_bytes": min_free_heap_bytes,
+        "wifi_rssi": wifi_rssi,
+        "ota_slot": ota_slot,
+        "firmware_version": env!("CARGO_PKG_VERSION"),
+    })
 }

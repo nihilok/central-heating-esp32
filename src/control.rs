@@ -231,6 +231,12 @@ impl HeatingController {
 
         if let Some(sys) = self.systems.iter_mut().find(|s| s.system_id == system_id) {
             sys.relay_on = actual_on;
+            if actual_on {
+                sys.pending_heating_since_last_sample = true;
+            }
+            if let (Some(temp), Some(now_epoch)) = (sys.temperature, time::now_epoch()) {
+                sys.record_history_sample(temp, actual_on, now_epoch);
+            }
         }
     }
 

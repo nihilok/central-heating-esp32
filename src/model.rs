@@ -1,5 +1,7 @@
 //! Domain models and schedule/thermostat evaluation logic for heating zones.
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 use crate::time::{WallTime, Weekday};
@@ -30,6 +32,23 @@ pub const DISABLED_COOLDOWN_SECS: f64 = 15.0 * 60.0;
 
 /// Default TTL in seconds for cached/pushed temperature readings.
 pub const DEFAULT_EXPIRY_SECS: u64 = 20;
+
+/// Maximum number of 5-minute history samples retained per zone in RAM (24 hours = 288 points).
+pub const HISTORY_MAX_POINTS: usize = 288;
+
+/// Interval in seconds between recorded history samples (5 minutes).
+pub const HISTORY_SAMPLE_INTERVAL_SECS: u64 = 300;
+
+/// A 5-minute historical sample of zone temperature and heating relay activity.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct HistoryPoint {
+    /// Unix epoch timestamp in seconds.
+    pub ts: u64,
+    /// Adjusted room temperature in °C.
+    pub temp: f64,
+    /// Whether the zone relay was active during this sample window.
+    pub heating: bool,
+}
 
 fn default_true() -> bool {
     true
@@ -140,9 +159,47 @@ pub struct HeatingSystem {
     pub expiry_seconds: u64,
     #[serde(skip)]
     pub relay_on: bool,
+    #[serde(skip)]
+    pub history: VecDeque<HistoryPoint>,
+    #[serde(skip)]
+    pub pending_heating_since_last_sample: bool,
 }
 
 impl HeatingSystem {
+    /// Records a 5-minute history sample into the in-RAM ring buffer (`HISTORY_MAX_POINTS` = 288).
+    /// Also latches `heating = true` if the relay was switched ON at any point during the current 5-minute window.
+    pub fn record_history_sample(&mut self, temp: f64, relay_on: bool, now_epoch: f64) {
+        if relay_on {
+            self.pending_heating_since_last_sample = true;
+        }
+        let now_ts = now_epoch as u64;
+        if now_ts == 0 {
+            return;
+        }
+
+        let should_push = match self.history.back() {
+            None => true,
+            Some(last) => now_ts >= last.ts.saturating_add(HISTORY_SAMPLE_INTERVAL_SECS),
+        };
+
+        if should_push {
+            if self.history.len() >= HISTORY_MAX_POINTS {
+                self.history.pop_front();
+            }
+            self.history.push_back(HistoryPoint {
+                ts: now_ts,
+                temp,
+                heating: relay_on || self.pending_heating_since_last_sample,
+            });
+            self.pending_heating_since_last_sample = relay_on;
+        } else if let Some(last) = self.history.back_mut() {
+            // Keep the latest bucket's temperature fresh and latch heating if relay turned on right after a sample.
+            if now_ts.saturating_sub(last.ts) < 30 && relay_on {
+                last.heating = true;
+            }
+        }
+    }
+
     /// Returns a copy of `periods` sorted chronologically by `(start, end)`.
     pub fn sorted_periods(&self) -> Vec<&Period> {
         let mut sorted: Vec<&Period> = self.periods.iter().collect();
@@ -281,13 +338,23 @@ impl HeatingSystem {
             self.clear_expired_overrides(epoch);
         }
         let is_within_period = wall.map(|w| self.is_within_period(w)).unwrap_or(false);
+        let current_target = wall
+            .map(|w| self.current_target(w))
+            .unwrap_or(DEFAULT_MINIMUM_TARGET);
         SystemOut {
             system_id: self.system_id.clone(),
+            sensor: self.sensor.clone(),
             periods: self.periods.clone(),
             program: self.program,
             advance: self.advance,
             boost: self.boost,
             is_within_period,
+            temperature: self.temperature,
+            current_target,
+            relay_on: self.relay_on,
+            disabled: self.disabled,
+            error_count: self.error_count,
+            history: self.history.iter().copied().collect(),
         }
     }
 }
@@ -296,11 +363,18 @@ impl HeatingSystem {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SystemOut {
     pub system_id: String,
+    pub sensor: SensorNode,
     pub periods: Vec<Period>,
     pub program: bool,
     pub advance: Option<f64>,
     pub boost: Option<f64>,
     pub is_within_period: bool,
+    pub temperature: Option<f64>,
+    pub current_target: f64,
+    pub relay_on: bool,
+    pub disabled: bool,
+    pub error_count: u32,
+    pub history: Vec<HistoryPoint>,
 }
 
 /// Request body for `POST /api/v3/periods/{system_id}/`.
@@ -400,6 +474,8 @@ pub fn default_systems() -> Vec<HeatingSystem> {
             temperature_expiry: None,
             expiry_seconds: DEFAULT_EXPIRY_SECS,
             relay_on: false,
+            history: VecDeque::new(),
+            pending_heating_since_last_sample: false,
         },
         HeatingSystem {
             system_id: "upstairs".to_string(),
@@ -434,6 +510,8 @@ pub fn default_systems() -> Vec<HeatingSystem> {
             temperature_expiry: None,
             expiry_seconds: DEFAULT_EXPIRY_SECS,
             relay_on: false,
+            history: VecDeque::new(),
+            pending_heating_since_last_sample: false,
         },
     ]
 }

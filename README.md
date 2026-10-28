@@ -51,6 +51,18 @@ espflash flash --monitor
 ./scripts/ota.sh 192.168.1.168
 ```
 
+## Web UI (`ui/`)
+
+The embedded web interface in [`ui/`](./ui) is built with **Svelte 5** (Runes), **TypeScript**, **Vite**, and **Tailwind CSS v4**. It compiles and compresses into ~37 KB total (`web/assets/index.js.gz` + `web/assets/index.css.gz`) and is embedded directly into the ESP32 firmware binary via `include_bytes!`.
+
+```sh
+# Local development with hot reload (proxies /api, /token, /check_token to 192.168.1.168):
+cd ui && npm run dev
+
+# Build and gzip into web/ (also run automatically by ./scripts/ota.sh):
+./scripts/build-ui.sh
+```
+
 ## Architecture Roadmap
 
 - [x] Base ESP-IDF project configuration & GPIO pin setup
