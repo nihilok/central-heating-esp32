@@ -39,6 +39,9 @@ pub const HISTORY_MAX_POINTS: usize = 288;
 /// Interval in seconds between recorded history samples (5 minutes).
 pub const HISTORY_SAMPLE_INTERVAL_SECS: u64 = 300;
 
+/// Number of bytes in a packed binary `HistoryPoint` (4 + 2 + 1 = 7 bytes).
+pub const HISTORY_POINT_BYTES: usize = 7;
+
 /// A 5-minute historical sample of zone temperature and heating relay activity.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct HistoryPoint {
@@ -48,6 +51,60 @@ pub struct HistoryPoint {
     pub temp: f64,
     /// Whether the zone relay was active during this sample window.
     pub heating: bool,
+}
+
+impl HistoryPoint {
+    /// Encodes a history point into a compact 7-byte binary representation:
+    /// - Bytes 0..4: timestamp as u32 (little endian)
+    /// - Bytes 4..6: temperature * 10 as i16 (little endian, 0.1°C resolution)
+    /// - Byte 6: heating flag (0 = off, 1 = on)
+    pub fn encode(&self) -> [u8; HISTORY_POINT_BYTES] {
+        let mut buf = [0u8; HISTORY_POINT_BYTES];
+        let ts_u32 = self.ts.min(u32::MAX as u64) as u32;
+        buf[0..4].copy_from_slice(&ts_u32.to_le_bytes());
+        let temp_fixed = (self.temp * 10.0).round() as i16;
+        buf[4..6].copy_from_slice(&temp_fixed.to_le_bytes());
+        buf[6] = if self.heating { 1 } else { 0 };
+        buf
+    }
+
+    /// Decodes a history point from 7 packed bytes.
+    pub fn decode(buf: &[u8]) -> Option<Self> {
+        if buf.len() < HISTORY_POINT_BYTES {
+            return None;
+        }
+        let ts = u32::from_le_bytes([buf[0], buf[1], buf[2], buf[3]]) as u64;
+        let temp_fixed = i16::from_le_bytes([buf[4], buf[5]]);
+        let temp = (temp_fixed as f64) / 10.0;
+        let heating = buf[6] != 0;
+        Some(Self { ts, temp, heating })
+    }
+}
+
+/// Packs a ring buffer of history points into a binary blob for NVS storage.
+pub fn encode_history_blob(points: &VecDeque<HistoryPoint>) -> Vec<u8> {
+    let mut out = Vec::with_capacity(points.len() * HISTORY_POINT_BYTES);
+    for p in points {
+        out.extend_from_slice(&p.encode());
+    }
+    out
+}
+
+/// Unpacks a binary blob from NVS into a ring buffer of history points,
+/// filtering out any samples older than `min_ts` and capping at `HISTORY_MAX_POINTS`.
+pub fn decode_history_blob(blob: &[u8], min_ts: u64) -> VecDeque<HistoryPoint> {
+    let mut deque = VecDeque::new();
+    for chunk in blob.chunks_exact(HISTORY_POINT_BYTES) {
+        if let Some(p) = HistoryPoint::decode(chunk) {
+            if p.ts >= min_ts {
+                if deque.len() >= HISTORY_MAX_POINTS {
+                    deque.pop_front();
+                }
+                deque.push_back(p);
+            }
+        }
+    }
+    deque
 }
 
 fn default_true() -> bool {
@@ -196,6 +253,17 @@ impl HeatingSystem {
             // Keep the latest bucket's temperature fresh and latch heating if relay turned on right after a sample.
             if now_ts.saturating_sub(last.ts) < 30 && relay_on {
                 last.heating = true;
+            }
+        }
+    }
+
+    /// Drops any history points timestamped older than `min_ts` (e.g. older than 24 hours).
+    pub fn prune_old_history(&mut self, min_ts: u64) {
+        while let Some(front) = self.history.front() {
+            if front.ts < min_ts {
+                self.history.pop_front();
+            } else {
+                break;
             }
         }
     }
@@ -514,4 +582,43 @@ pub fn default_systems() -> Vec<HeatingSystem> {
             pending_heating_since_last_sample: false,
         },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_history_point_encode_decode() {
+        let p = HistoryPoint {
+            ts: 1793350177,
+            temp: 21.4,
+            heating: true,
+        };
+        let encoded = p.encode();
+        assert_eq!(encoded.len(), HISTORY_POINT_BYTES);
+        let decoded = HistoryPoint::decode(&encoded).expect("decode failed");
+        assert_eq!(decoded.ts, p.ts);
+        assert!((decoded.temp - p.temp).abs() < 0.01);
+        assert_eq!(decoded.heating, p.heating);
+    }
+
+    #[test]
+    fn test_history_blob_roundtrip_and_pruning() {
+        let mut deque = VecDeque::new();
+        for i in 0..10 {
+            deque.push_back(HistoryPoint {
+                ts: 1000 + i * 300,
+                temp: 20.0 + (i as f64) * 0.2,
+                heating: i % 2 == 0,
+            });
+        }
+        let blob = encode_history_blob(&deque);
+        assert_eq!(blob.len(), 10 * HISTORY_POINT_BYTES);
+
+        // Filter points older than 2000
+        let restored = decode_history_blob(&blob, 2000);
+        assert_eq!(restored.len(), 7);
+        assert_eq!(restored.front().unwrap().ts, 2200);
+    }
 }

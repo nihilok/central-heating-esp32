@@ -9,7 +9,8 @@ use esp_idf_svc::nvs::{EspDefaultNvsPartition, EspNvs, NvsDefault};
 use log::{error, info, warn};
 
 use crate::model::{
-    default_systems, HeatingSystem, CHECK_FREQUENCY_SECONDS, DISABLED_COOLDOWN_SECS,
+    decode_history_blob, default_systems, encode_history_blob, HeatingSystem,
+    CHECK_FREQUENCY_SECONDS, DISABLED_COOLDOWN_SECS,
 };
 use crate::relay::Relay;
 use crate::sensor::fetch_sensor_temperature;
@@ -20,6 +21,9 @@ const NVS_SYSTEMS_KEY: &str = "systems";
 const NVS_TOKEN_KEY: &str = "auth_token";
 const CONTROL_THREAD_STACK_SIZE: usize = 10_240;
 
+/// Interval in seconds between periodic background flushes of history to NVS (15 minutes).
+const HISTORY_SAVE_INTERVAL_SECS: u64 = 15 * 60;
+
 const API_USER: &str = env!("API_USER");
 const API_PASS: &str = env!("API_PASS");
 const SENSOR_TOKEN: &str = env!("SENSOR_TOKEN");
@@ -29,6 +33,7 @@ pub type SharedController = Arc<Mutex<HeatingController>>;
 pub struct HeatingController {
     pub systems: Vec<HeatingSystem>,
     pub loop_enabled: bool,
+    pub last_history_nvs_save: u64,
     auth_token: String,
     downstairs_relay: Relay<'static>,
     upstairs_relay: Relay<'static>,
@@ -75,14 +80,23 @@ impl HeatingController {
 
         let auth_token = Self::load_or_init_token(&nvs);
 
-        Ok(Self {
+        let mut controller = Self {
             systems,
             loop_enabled: true,
+            last_history_nvs_save: time::now_epoch().unwrap_or(0.0) as u64,
             auth_token,
             downstairs_relay,
             upstairs_relay,
             nvs,
-        })
+        };
+
+        // Load persisted 24h history from NVS (filtering points older than 24h)
+        let min_ts = time::now_epoch()
+            .map(|now| (now as u64).saturating_sub(86400))
+            .unwrap_or(0);
+        controller.load_history_from_nvs(min_ts);
+
+        Ok(controller)
     }
 
     fn generate_random_hex_token() -> String {
@@ -192,6 +206,47 @@ impl HeatingController {
     /// Persist current zone configurations and schedules to NVS.
     pub fn save_to_nvs(&self) -> Result<()> {
         Self::write_systems_to_nvs(&self.nvs, &self.systems)
+    }
+
+    /// Saves history for all zones to NVS as compact binary blobs (~2 KB per zone for 24h).
+    pub fn save_history_to_nvs(&self) -> Result<()> {
+        for sys in &self.systems {
+            let key = zone_history_nvs_key(&sys.system_id);
+            let blob = encode_history_blob(&sys.history);
+            if let Err(e) = self.nvs.set_blob(key, &blob) {
+                warn!(
+                    "Failed to save history blob for '{}' to NVS: {e:?}",
+                    sys.system_id
+                );
+            }
+        }
+        Ok(())
+    }
+
+    /// Loads persisted history blobs from NVS on boot, filtering out points older than `min_ts`.
+    pub fn load_history_from_nvs(&mut self, min_ts: u64) {
+        for sys in &mut self.systems {
+            let key = zone_history_nvs_key(&sys.system_id);
+            match self.nvs.blob_len(key) {
+                Ok(Some(len)) if len > 0 => {
+                    let mut buf = vec![0u8; len];
+                    match self.nvs.get_blob(key, &mut buf) {
+                        Ok(Some(bytes)) => {
+                            let points = decode_history_blob(bytes, min_ts);
+                            info!(
+                                "Loaded {} history samples for '{}' from NVS",
+                                points.len(),
+                                sys.system_id
+                            );
+                            sys.history = points;
+                        }
+                        Ok(None) => {}
+                        Err(e) => warn!("Failed to read history blob for '{}' from NVS: {e:?}", sys.system_id),
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     /// Fail-safe helper: switch all relays OFF immediately and update state.
@@ -434,5 +489,34 @@ fn run_control_tick(controller: &SharedController) {
                 }
             }
         }
+    }
+
+    // 4. Periodically prune history older than 24h and auto-save to NVS (every 15 minutes)
+    {
+        let Ok(mut guard) = controller.lock() else {
+            return;
+        };
+        let now_ts = now_epoch as u64;
+        let min_ts = now_ts.saturating_sub(86400);
+        for sys in &mut guard.systems {
+            sys.prune_old_history(min_ts);
+        }
+        if now_ts >= guard.last_history_nvs_save.saturating_add(HISTORY_SAVE_INTERVAL_SECS) {
+            if let Err(e) = guard.save_history_to_nvs() {
+                warn!("Failed to auto-save history to NVS: {e:?}");
+            } else {
+                info!("Auto-saved zone history to NVS");
+            }
+            guard.last_history_nvs_save = now_ts;
+        }
+    }
+}
+
+/// Returns the NVS key used to store history blobs for a given heating zone (<= 15 chars).
+fn zone_history_nvs_key(system_id: &str) -> &'static str {
+    match system_id {
+        "downstairs" => "hist_down",
+        "upstairs" => "hist_up",
+        _ => "hist_other",
     }
 }

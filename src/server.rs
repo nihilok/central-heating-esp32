@@ -721,6 +721,9 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
             if let Ok(mut guard) = ctrl.lock() {
                 guard.loop_enabled = false;
                 guard.switch_all_off();
+                if let Err(e) = guard.save_history_to_nvs() {
+                    warn!("Failed to save history to NVS before OTA: {e:?}");
+                }
             }
 
             info!("OTA: initiating firmware update...");
