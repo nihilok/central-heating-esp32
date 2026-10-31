@@ -1,4 +1,11 @@
-import type { Days, HeatingSystem, Period, SensorNode, StatusResponse } from './types';
+import type {
+  Days,
+  HeatingSystem,
+  HistoryPoint,
+  Period,
+  SensorNode,
+  StatusResponse,
+} from './types';
 
 const TOKEN_STORAGE_KEY = 'heating_auth_token';
 
@@ -69,6 +76,10 @@ export async function checkToken(): Promise<boolean> {
 
 export async function fetchStatus(): Promise<StatusResponse> {
   return apiFetch<StatusResponse>('/api/v3/status/');
+}
+
+export async function fetchHistory(): Promise<Record<string, HistoryPoint[]>> {
+  return apiFetch<Record<string, HistoryPoint[]>>('/api/v3/history/');
 }
 
 export async function savePeriods(systemId: string, periods: Period[]): Promise<HeatingSystem> {

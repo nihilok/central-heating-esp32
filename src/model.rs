@@ -422,8 +422,12 @@ impl HeatingSystem {
             relay_on: self.relay_on,
             disabled: self.disabled,
             error_count: self.error_count,
-            history: self.history.iter().copied().collect(),
         }
+    }
+
+    /// Returns the historical samples for this zone.
+    pub fn get_history(&self) -> Vec<HistoryPoint> {
+        self.history.iter().copied().collect()
     }
 }
 
@@ -442,7 +446,6 @@ pub struct SystemOut {
     pub relay_on: bool,
     pub disabled: bool,
     pub error_count: u32,
-    pub history: Vec<HistoryPoint>,
 }
 
 /// Request body for `POST /api/v3/periods/{system_id}/`.

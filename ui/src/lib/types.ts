@@ -40,8 +40,10 @@ export interface HeatingSystem {
   relay_on: boolean;
   disabled: boolean;
   error_count: number;
-  history: HistoryPoint[];
+  history?: HistoryPoint[];
 }
+
+export type HistoryResponse = Record<string, HistoryPoint[]>;
 
 export interface Diagnostics {
   uptime_secs: number;

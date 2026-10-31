@@ -5,6 +5,7 @@
   import SettingsModal from './lib/SettingsModal.svelte';
   import {
     checkToken,
+    fetchHistory,
     fetchStatus,
     getSavedToken,
     login,
@@ -17,6 +18,7 @@
   import type {
     Diagnostics,
     HeatingSystem,
+    HistoryPoint,
     ThemeMode,
     WeatherData,
     WeatherLocation,
@@ -32,6 +34,7 @@
   let loginBusy = $state(false);
 
   let systems = $state<HeatingSystem[]>([]);
+  let historyData = $state<Record<string, HistoryPoint[]>>({});
   let loopEnabled = $state<boolean>(true);
   let diagnostics = $state<Diagnostics | null>(null);
   let loadingStatus = $state<boolean>(true);
@@ -66,10 +69,13 @@
   async function refreshStatus() {
     try {
       const data = await fetchStatus();
-      // Order downstairs first, upstairs second
-      systems = data.systems.sort((a, b) =>
-        a.system_id.localeCompare(b.system_id),
-      );
+      // Order downstairs first, upstairs second, preserving cached history
+      systems = data.systems
+        .map((s) => ({
+          ...s,
+          history: historyData[s.system_id] ?? [],
+        }))
+        .sort((a, b) => a.system_id.localeCompare(b.system_id));
       loopEnabled = data.loop_enabled;
       diagnostics = data.diagnostics;
       pollError = null;
@@ -81,6 +87,19 @@
       }
     } finally {
       loadingStatus = false;
+    }
+  }
+
+  async function refreshHistory() {
+    try {
+      const data = await fetchHistory();
+      historyData = data;
+      systems = systems.map((s) => ({
+        ...s,
+        history: data[s.system_id] ?? s.history ?? [],
+      }));
+    } catch {
+      // Non-fatal if offline
     }
   }
 
@@ -100,6 +119,7 @@
       await login(username, password);
       authenticated = true;
       password = '';
+      refreshHistory();
       await refreshStatus();
     } catch (err) {
       loginError = err instanceof Error ? err.message : 'Login failed';
@@ -131,6 +151,7 @@
     // Verify existing token & start polling
     (async () => {
       refreshWeather();
+      refreshHistory();
       await refreshStatus();
       if (getSavedToken()) {
         const valid = await checkToken();
@@ -146,6 +167,12 @@
       }
     }, 5000);
 
+    const historyTimer = setInterval(() => {
+      if (authenticated) {
+        refreshHistory();
+      }
+    }, 2 * 60 * 1000);
+
     const weatherTimer = setInterval(() => {
       refreshWeather();
     }, 10 * 60 * 1000);
@@ -153,6 +180,7 @@
     return () => {
       mediaQuery.removeEventListener('change', onSystemThemeChange);
       clearInterval(statusTimer);
+      clearInterval(historyTimer);
       clearInterval(weatherTimer);
     };
   });

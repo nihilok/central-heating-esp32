@@ -12,7 +12,8 @@ use serde_json::json;
 
 use crate::control::SharedController;
 use crate::model::{
-    AdvanceBody, PeriodsBody, SensorReceiveBody, SystemUpdate, DEFAULT_MINIMUM_TARGET,
+    AdvanceBody, HistoryPoint, PeriodsBody, SensorReceiveBody, SystemOut, SystemUpdate,
+    DEFAULT_MINIMUM_TARGET,
 };
 use crate::sensor::fetch_sensor_temperature;
 use crate::time;
@@ -40,6 +41,24 @@ const CORS_HEADERS: &[(&str, &str)] = &[
     ),
     ("Access-Control-Allow-Methods", "GET, POST, OPTIONS"),
 ];
+
+#[derive(Serialize)]
+struct DiagnosticsPayload {
+    uptime_secs: u64,
+    free_heap_bytes: u32,
+    min_free_heap_bytes: u32,
+    wifi_rssi: Option<i8>,
+    ota_slot: String,
+    firmware_version: &'static str,
+}
+
+#[derive(Serialize)]
+struct StatusPayload<'a> {
+    systems: &'a [SystemOut],
+    loop_enabled: bool,
+    server_epoch: Option<f64>,
+    diagnostics: DiagnosticsPayload,
+}
 
 /// Starts the HTTP server on port 80 and registers all REST API and static UI routes.
 pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'static>> {
@@ -611,7 +630,7 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
         })?;
     }
 
-    // GET /api/v3/status/ — Consolidated dashboard payload (all zones + history + diagnostics)
+    // GET /api/v3/status/ — Consolidated dashboard payload (all zones + diagnostics)
     {
         let ctrl = controller.clone();
         server.fn_handler("/api/v3/status/", Method::Get, move |req| {
@@ -635,13 +654,45 @@ pub fn start_http_server(controller: SharedController) -> Result<EspHttpServer<'
             send_json(
                 req,
                 200,
-                &json!({
-                    "systems": systems,
-                    "loop_enabled": loop_enabled,
-                    "server_epoch": now_epoch,
-                    "diagnostics": diagnostics,
-                }),
+                &StatusPayload {
+                    systems: &systems,
+                    loop_enabled,
+                    server_epoch: now_epoch,
+                    diagnostics,
+                },
             )
+        })?;
+    }
+
+    // GET /api/v3/history/ — Historical 5-minute temperature & heating samples
+    {
+        let ctrl = controller.clone();
+        server.fn_handler("/api/v3/history/", Method::Get, move |req| {
+            let histories: Vec<(String, Vec<HistoryPoint>)> = {
+                let Ok(guard) = ctrl.lock() else {
+                    return send_json(req, 500, &json!({"detail": "Internal lock error"}));
+                };
+                guard
+                    .systems
+                    .iter()
+                    .map(|s| (s.system_id.clone(), s.get_history()))
+                    .collect()
+            };
+
+            let mut resp = req.into_response(200, None, CORS_HEADERS)?;
+            resp.write_all(b"{")?;
+            for (i, (system_id, points)) in histories.into_iter().enumerate() {
+                if i > 0 {
+                    resp.write_all(b",")?;
+                }
+                let key_json = serde_json::to_string(&system_id)?;
+                resp.write_all(key_json.as_bytes())?;
+                resp.write_all(b":")?;
+                let points_json = serde_json::to_vec(&points)?;
+                resp.write_all(&points_json)?;
+            }
+            resp.write_all(b"}")?;
+            Ok(())
         })?;
     }
 
@@ -1146,7 +1197,7 @@ fn hex_val(b: u8) -> Option<u8> {
     }
 }
 
-fn collect_diagnostics() -> serde_json::Value {
+fn collect_diagnostics() -> DiagnosticsPayload {
     let uptime_secs = unsafe { (esp_idf_svc::sys::esp_timer_get_time() / 1_000_000).max(0) as u64 };
     let free_heap_bytes = unsafe { esp_idf_svc::sys::esp_get_free_heap_size() };
     let min_free_heap_bytes = unsafe { esp_idf_svc::sys::esp_get_minimum_free_heap_size() };
@@ -1165,12 +1216,12 @@ fn collect_diagnostics() -> serde_json::Value {
         .and_then(|ota| ota.get_running_slot().ok().map(|s| s.label.to_string()))
         .unwrap_or_else(|| "unknown".to_string());
 
-    json!({
-        "uptime_secs": uptime_secs,
-        "free_heap_bytes": free_heap_bytes,
-        "min_free_heap_bytes": min_free_heap_bytes,
-        "wifi_rssi": wifi_rssi,
-        "ota_slot": ota_slot,
-        "firmware_version": env!("CARGO_PKG_VERSION"),
-    })
+    DiagnosticsPayload {
+        uptime_secs,
+        free_heap_bytes,
+        min_free_heap_bytes,
+        wifi_rssi,
+        ota_slot,
+        firmware_version: env!("CARGO_PKG_VERSION"),
+    }
 }
