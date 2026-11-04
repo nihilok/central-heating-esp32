@@ -349,13 +349,16 @@ pub fn spawn_control_loop(controller: SharedController) -> Result<JoinHandle<()>
         .name("heating-ctrl".into())
         .stack_size(CONTROL_THREAD_STACK_SIZE)
         .spawn(move || {
+            crate::watchdog::register_current_task();
             info!(
                 "Heating control loop started (interval: {}s)",
                 CHECK_FREQUENCY_SECONDS
             );
 
             loop {
+                crate::watchdog::feed_watchdog();
                 run_control_tick(&controller);
+                crate::watchdog::feed_watchdog();
                 thread::sleep(Duration::from_secs(CHECK_FREQUENCY_SECONDS));
             }
         })

@@ -52,6 +52,7 @@ export interface Diagnostics {
   wifi_rssi: number | null;
   ota_slot: string;
   firmware_version: string;
+  watchdog_timeout_secs?: number;
 }
 
 export interface StatusResponse {

@@ -50,6 +50,7 @@ struct DiagnosticsPayload {
     wifi_rssi: Option<i8>,
     ota_slot: String,
     firmware_version: &'static str,
+    watchdog_timeout_secs: u32,
 }
 
 #[derive(Serialize)]
@@ -1223,5 +1224,6 @@ fn collect_diagnostics() -> DiagnosticsPayload {
         wifi_rssi,
         ota_slot,
         firmware_version: env!("CARGO_PKG_VERSION"),
+        watchdog_timeout_secs: crate::watchdog::WATCHDOG_TIMEOUT_SECS,
     }
 }

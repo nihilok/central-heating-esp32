@@ -100,9 +100,9 @@ impl WifiManager {
         Ok(true)
     }
 
-    /// Returns `true` if station interface is connected.
+    /// Returns `true` if station interface is connected and has an active IP netif.
     pub fn is_connected(&self) -> bool {
-        self.wifi.is_connected().unwrap_or(false)
+        self.wifi.is_connected().unwrap_or(false) && self.wifi.is_up().unwrap_or(false)
     }
 
     /// Retrieve the current IPv4 lease information.

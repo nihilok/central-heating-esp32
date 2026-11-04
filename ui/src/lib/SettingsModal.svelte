@@ -323,6 +323,14 @@
                   {diagnostics.ota_slot}
                 </div>
               </div>
+              {#if diagnostics.watchdog_timeout_secs}
+                <div class="rounded-lg bg-white dark:bg-slate-900 p-2 border border-slate-200/60 dark:border-slate-800">
+                  <div class="text-[10px] text-slate-400">Watchdog</div>
+                  <div class="text-xs font-mono font-bold text-emerald-600 dark:text-emerald-400 mt-0.5">
+                    Active ({diagnostics.watchdog_timeout_secs}s)
+                  </div>
+                </div>
+              {/if}
             </div>
           {/if}
         </div>

@@ -4,6 +4,7 @@ mod relay;
 mod sensor;
 mod server;
 mod time;
+mod watchdog;
 mod wifi;
 
 use std::sync::{Arc, Mutex};
@@ -16,7 +17,7 @@ use esp_idf_svc::log::EspLogger;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::ota::EspOta;
 use esp_idf_svc::sys::link_patches;
-use log::{info, warn};
+use log::{error, info, warn};
 
 use control::{spawn_control_loop, HeatingController};
 use relay::Relay;
@@ -31,6 +32,11 @@ fn main() -> Result<()> {
     // Initialize logger
     EspLogger::initialize_default();
     info!("Starting Central Heating ESP32 Controller...");
+
+    // 0. Initialize hardware Task Watchdog Timer (TWDT)
+    watchdog::init_watchdog()?;
+    watchdog::register_current_task();
+    watchdog::feed_watchdog();
 
     // Mark the currently running OTA slot as valid after successful boot
     if let Ok(mut ota) = EspOta::new() {
@@ -87,16 +93,38 @@ fn main() -> Result<()> {
 
     info!("System initialized. Entering supervisory monitoring loop.");
 
+    // Consecutive disconnected checks before restarting to recover network stack (30 * 10s = 5m)
+    const MAX_WIFI_DISCONNECT_TICKS: u32 = 30;
+    let mut wifi_disconnect_ticks = 0u32;
+
     // Supervisory monitoring loop
     loop {
+        watchdog::feed_watchdog();
         std::thread::sleep(Duration::from_secs(10));
+        watchdog::feed_watchdog();
 
-        // Fail-safe: if Wi-Fi is down, ensure relays are switched OFF before attempting reconnect
+        // Fail-safe: if Wi-Fi is down, ensure relays are switched OFF
         if !wifi.is_connected() {
             warn!("Wi-Fi disconnected — holding heating relays OFF");
             if let Ok(mut guard) = controller.lock() {
                 guard.switch_all_off();
             }
+
+            wifi_disconnect_ticks += 1;
+            if wifi_disconnect_ticks >= MAX_WIFI_DISCONNECT_TICKS {
+                error!(
+                    "Wi-Fi disconnected continuously for {}s — persisting state and restarting ESP32...",
+                    wifi_disconnect_ticks * 10
+                );
+                if let Ok(guard) = controller.lock() {
+                    let _ = guard.save_history_to_nvs();
+                }
+                unsafe {
+                    esp_idf_svc::sys::esp_restart();
+                }
+            }
+        } else {
+            wifi_disconnect_ticks = 0;
         }
 
         // Ensure Wi-Fi connection is maintained
