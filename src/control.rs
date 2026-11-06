@@ -260,6 +260,7 @@ impl HeatingController {
         for sys in &mut self.systems {
             sys.relay_on = false;
         }
+        crate::mqtt::notify_state_changed();
     }
 
     /// Actuate the hardware relay for a specific zone (`downstairs` or `upstairs`).
@@ -317,11 +318,13 @@ impl HeatingController {
             } else if let Some(temp) = sys.temperature {
                 sys.evaluate_should_heat(temp, &wall_time, now_epoch)
             } else {
+                crate::mqtt::notify_state_changed();
                 return;
             }
         };
 
         self.set_zone_relay(system_id, should_heat);
+        crate::mqtt::notify_state_changed();
     }
 }
 
@@ -513,6 +516,9 @@ fn run_control_tick(controller: &SharedController) {
             guard.last_history_nvs_save = now_ts;
         }
     }
+
+    // 5. Notify MQTT worker to publish latest temperatures, relay states, and diagnostics
+    crate::mqtt::notify_state_changed();
 }
 
 /// Returns the NVS key used to store history blobs for a given heating zone (<= 15 chars).

@@ -71,3 +71,5 @@ cd ui && npm run dev
 - [x] Background heating control loop thread (polling remote sensors, NVS schedule persistence & evaluating target periods)
 - [x] Embedded HTTP server (`EspHttpServer`) exposing REST API & serving UI assets
 - [x] Over-the-Air (OTA) Wi-Fi firmware updates (`POST /api/v3/ota/` & `scripts/ota.sh`)
+- [x] Hardware Task Watchdog Timer (`TWDT`) & 24h NVS history persistence
+- [x] MQTT client (`EspMqttClient`) with Home Assistant Auto-Discovery (`climate`, `button`, `binary_sensor`, `sensor`)

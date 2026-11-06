@@ -18,3 +18,7 @@ username = "admin"
 password = "YOUR_UI_PASSWORD"
 # Optional shared token for POST /api/v3/receive/{sensor_id}/ (X-Sensor-Token header)
 sensor_token = ""
+
+[mqtt]
+# Optional MQTT broker URL for Home Assistant Auto-Discovery (set to "" to disable)
+url = "mqtt://192.168.1.252:1883"

@@ -312,6 +312,82 @@ impl HeatingSystem {
         DEFAULT_MINIMUM_TARGET
     }
 
+    /// Computes the real physical target temperature (°C) for integrations like Home Assistant
+    /// (returns `BOOST_THRESHOLD` = 26.0°C during boost instead of the 999.0 UI sentinel).
+    pub fn effective_target(&self, wall: &WallTime) -> f64 {
+        if self.boost.is_some() {
+            return BOOST_THRESHOLD;
+        }
+        self.current_target(wall)
+    }
+
+    /// Sets the target temperature from an external thermostat UI (such as Home Assistant):
+    /// - If currently inside an active scheduled period, updates that period's target.
+    /// - If outside a scheduled period and `target > DEFAULT_MINIMUM_TARGET`, enables a 1-hour
+    ///   `advance` override and updates the next upcoming period's target to `target`.
+    pub fn set_target_temperature(&mut self, target: f64, wall: &WallTime, now_epoch: f64) {
+        let clamped = ((target.clamp(DEFAULT_MINIMUM_TARGET, BOOST_THRESHOLD)) * 10.0).round() / 10.0;
+        self.boost = None;
+
+        if clamped <= DEFAULT_MINIMUM_TARGET {
+            self.advance = None;
+            return;
+        }
+
+        self.program = true;
+        let check_time = wall.decimal_hours();
+        let today = wall.weekday;
+
+        // 1. If currently inside an active scheduled period, update it in place.
+        let mut updated_active = false;
+        for period in &mut self.periods {
+            if period.start <= check_time
+                && check_time < period.end
+                && period.days.is_enabled(today)
+            {
+                period.target = clamped;
+                updated_active = true;
+            }
+        }
+        if updated_active {
+            return;
+        }
+
+        // 2. Otherwise, activate a 1-hour advance and update the next upcoming period's target.
+        if self.advance.is_none() {
+            self.advance = Some(now_epoch + 3600.0);
+        }
+
+        // Find the index of the next period (matching `next_target` ordering: by start, then end)
+        let mut indexed: Vec<(usize, f64, f64, Days)> = self
+            .periods
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (i, p.start, p.end, p.days))
+            .collect();
+        indexed.sort_by(|a, b| {
+            a.1.partial_cmp(&b.1)
+                .unwrap_or(core::cmp::Ordering::Equal)
+                .then_with(|| a.2.partial_cmp(&b.2).unwrap_or(core::cmp::Ordering::Equal))
+        });
+
+        if let Some((idx, _, _, _)) = indexed
+            .iter()
+            .find(|(_, _, end, days)| *end > check_time && days.is_enabled(today))
+        {
+            self.periods[*idx].target = clamped;
+            return;
+        }
+
+        let tomorrow = today.next();
+        if let Some((idx, _, _, _)) = indexed
+            .iter()
+            .find(|(_, _, _, days)| days.is_enabled(tomorrow))
+        {
+            self.periods[*idx].target = clamped;
+        }
+    }
+
     /// Computes the target temperature of the next upcoming scheduled period
     /// (used when `advance` is active).
     pub fn next_target(&self, wall: &WallTime) -> f64 {

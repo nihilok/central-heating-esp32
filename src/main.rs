@@ -1,5 +1,6 @@
 mod control;
 mod model;
+mod mqtt;
 mod relay;
 mod sensor;
 mod server;
@@ -91,6 +92,15 @@ fn main() -> Result<()> {
     // 5. Start HTTP Server (EspHttpServer) to serve REST API and UI
     let _http_server = start_http_server(controller.clone())?;
 
+    // 6. Start MQTT client & Home Assistant Auto-Discovery worker
+    let mut mqtt_started = false;
+    if wifi_connected {
+        match mqtt::start_mqtt(controller.clone()) {
+            Ok(()) => mqtt_started = true,
+            Err(e) => warn!("Failed to start MQTT client at boot: {e:?}"),
+        }
+    }
+
     info!("System initialized. Entering supervisory monitoring loop.");
 
     // Consecutive disconnected checks before restarting to recover network stack (30 * 10s = 5m)
@@ -137,6 +147,15 @@ fn main() -> Result<()> {
             if let Ok(svc) = TimeService::init() {
                 svc.wait_for_sync(Duration::from_secs(15));
                 time_service = Some(svc);
+            }
+        }
+
+        // Start MQTT client if it wasn't started at boot
+        if !mqtt_started && wifi.is_connected() {
+            if let Err(e) = mqtt::start_mqtt(controller.clone()) {
+                warn!("Failed to start MQTT client: {e:?}");
+            } else {
+                mqtt_started = true;
             }
         }
 

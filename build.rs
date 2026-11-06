@@ -10,6 +10,8 @@ fn main() {
     let mut api_user = std::env::var("API_USER").unwrap_or_default();
     let mut api_pass = std::env::var("API_PASS").unwrap_or_default();
     let mut sensor_token = std::env::var("SENSOR_TOKEN").unwrap_or_default();
+    let mut mqtt_url =
+        std::env::var("MQTT_URL").unwrap_or_else(|_| "mqtt://192.168.1.252:1883".into());
 
     if let Ok(content) = std::fs::read_to_string("cfg.toml") {
         let mut section = String::new();
@@ -37,6 +39,9 @@ fn main() {
                     ("auth", "sensor_token") | ("", "sensor_token") => {
                         sensor_token = v.to_string()
                     }
+                    ("mqtt", "url") | ("mqtt", "broker") | ("", "mqtt_url") => {
+                        mqtt_url = v.to_string()
+                    }
                     _ => {}
                 }
             }
@@ -54,4 +59,5 @@ fn main() {
     println!("cargo:rustc-env=API_USER={api_user}");
     println!("cargo:rustc-env=API_PASS={api_pass}");
     println!("cargo:rustc-env=SENSOR_TOKEN={sensor_token}");
+    println!("cargo:rustc-env=MQTT_URL={mqtt_url}");
 }
