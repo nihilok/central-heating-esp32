@@ -28,36 +28,21 @@ espflash save-image \
   "$IMAGE_PATH"
 
 echo "==> Authenticating with http://${HOST}/token/ ..."
-TOKEN="$(python3 - "$HOST" <<'PY'
-import json, sys, tomllib, urllib.request
+read -r AUTH_USER AUTH_PASS < <(python3 - <<'PY'
+import tomllib
 
-host = sys.argv[1]
 with open("cfg.toml", "rb") as f:
     cfg = tomllib.load(f)
 
 pw = cfg.get("auth", {}).get("password") or cfg.get("wifi", {}).get("psk")
 user = cfg.get("auth", {}).get("username") or "admin"
-
-boundary = "----ESP32OTABoundary"
-body = (
-    f"--{boundary}\r\n"
-    f'Content-Disposition: form-data; name="username"\r\n\r\n{user}\r\n'
-    f"--{boundary}\r\n"
-    f'Content-Disposition: form-data; name="password"\r\n\r\n{pw}\r\n'
-    f"--{boundary}--\r\n"
-).encode()
-
-req = urllib.request.Request(
-    f"http://{host}/token/",
-    data=body,
-    headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-    method="POST",
-)
-with urllib.request.urlopen(req, timeout=10) as resp:
-    data = json.loads(resp.read())
-    print(data["access_token"])
+print(user, pw)
 PY
-)"
+)
+TOKEN="$(curl -s --fail -X POST \
+  -F "username=${AUTH_USER}" \
+  -F "password=${AUTH_PASS}" \
+  "http://${HOST}/token/" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
 
 echo "==> Uploading OTA image ($(wc -c < "$IMAGE_PATH" | tr -d ' ') bytes) to http://${HOST}/api/v3/ota/ ..."
 curl --fail -X POST \

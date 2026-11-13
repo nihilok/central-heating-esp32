@@ -63,6 +63,8 @@ fn main() -> Result<()> {
     info!("Initializing Wi-Fi subsystem...");
     let mut wifi = WifiManager::new(peripherals.modem, sys_loop, Some(nvs.clone()))?;
     let wifi_connected = wifi.connect()?;
+    watchdog::feed_watchdog();
+    watchdog::feed_rtc_watchdog();
 
     // 3. Initialize SNTP for wall-clock time sync
     let mut time_service = None;
@@ -79,6 +81,8 @@ fn main() -> Result<()> {
     } else {
         warn!("Wi-Fi not connected at boot. SNTP sync deferred.");
     }
+    watchdog::feed_watchdog();
+    watchdog::feed_rtc_watchdog();
 
     // 4. Initialize shared HeatingController state (loads schedules from NVS)
     //    and spawn the background heating control loop thread.
@@ -110,8 +114,10 @@ fn main() -> Result<()> {
     // Supervisory monitoring loop
     loop {
         watchdog::feed_watchdog();
+        watchdog::feed_rtc_watchdog();
         std::thread::sleep(Duration::from_secs(10));
         watchdog::feed_watchdog();
+        watchdog::feed_rtc_watchdog();
 
         // Fail-safe: if Wi-Fi is down, ensure relays are switched OFF
         if !wifi.is_connected() {
